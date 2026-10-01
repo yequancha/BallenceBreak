@@ -1,0 +1,3 @@
+# 仅需要 Pillow（用于生成托盘图标）；Tkinter 为 Python 自带。
+# 系统托盘通过 Windows 原生 API 实现，无需 pystray。
+Pillow>=10.0.0
