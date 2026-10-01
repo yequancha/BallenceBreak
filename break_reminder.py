@@ -57,7 +57,7 @@ WM_BRING_TO_FRONT = 0x8011          # WM_APP + 0x11：唤醒已有实例显示�
 MIN_MINUTES, MAX_MINUTES = 1, 720
 
 # 喝水提醒参数默认值 / 范围（见 喝水提醒-实施方案.md）
-WATER_SIP_MIN, WATER_SIP_MAX = 25, 300
+WATER_SIP_MIN, WATER_SIP_MAX = 10, 300   # 每次饮水量范围（下限 10ml，便于小口/杯型换算）
 WATER_TARGET_MIN, WATER_TARGET_MAX = 500, 4000
 WATER_INTERVAL_FLOOR = 5         # 推导间隔下限（分钟）
 WATER_INTERVAL_CEIL = 180        # 推导间隔上限（分钟）

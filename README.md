@@ -85,7 +85,7 @@ python break_reminder.py
 ```
 
 - `minutes` / `topmost` / `auto_min` / `message` / `delay_minutes` / `restart_on_done` / `autostart`：休息提醒配置。
-- `water_*`：喝水提醒配置。`water_sip`（每次饮水量 ml，25–300）、`water_target`（每日饮水量 ml，500–4000）、
+- `water_*`：喝水提醒配置。`water_sip`（每次饮水量 ml，10–300）、`water_target`（每日饮水量 ml，500–4000）、
   `water_windows`（工作时间段，可多段）、`water_message`（提醒文案，空=默认）、
   `water_autoclose`（提示框自动消失，默认 false）、`water_autoclose_seconds`（自动消失秒数，3–120，默认 10）。
   缺字段一律走默认，旧配置自动升级。
@@ -114,3 +114,14 @@ pyinstaller --onefile --noconsole --icon icon.ico --name 久坐休息提醒 brea
 windres icon.rc -O coff -o icon.res
 gcc launcher.c icon.res -o ..\久坐休息提醒.exe -mwindows -O2 -s -nostdlib -luser32 -lkernel32
 ```
+
+## 许可证
+
+本项目基于 **MIT License** 开源，详见 [LICENSE](LICENSE)。
+
+```
+MIT License
+Copyright (c) 2026 yequancha
+```
+
+可自由使用、修改、分发（含商业用途），只需保留版权声明与许可声明。
