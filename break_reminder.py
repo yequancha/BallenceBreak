@@ -44,7 +44,14 @@ from tkinter import ttk
 from PIL import Image, ImageDraw
 
 APP_TITLE = "久坐休息提醒"
-APP_DIR = os.path.dirname(os.path.abspath(__file__))
+# 应用根目录 = 配置/日志所在目录。
+# 关键：PyInstaller 单文件模式下 __file__ 指向临时解包目录（_MEIxxxx），
+# 若照用它，config.json/error.log 会写进临时目录并在退出后被删除 —— 表现为
+# "设置每次启动都变回默认值"。因此打包运行时以 exe 所在目录为准。
+if getattr(sys, "frozen", False):
+    APP_DIR = os.path.dirname(os.path.abspath(sys.executable))
+else:
+    APP_DIR = os.path.dirname(os.path.abspath(__file__))
 CONFIG_FILE = os.path.join(APP_DIR, "config.json")
 
 # 空闲确认阈值：鼠标/键盘连续无输入达到该秒数，认为人已离开
@@ -373,20 +380,25 @@ def set_startup_autostart(enabled):
     """enabled=True 写入注册表 Run 项指向本程序；False 删除该启动项。
     返回 True/False 表示操作是否成功。仅 Windows。
 
-    指向策略：若以 PyInstaller 单文件 / 启动器 exe 运行（无 __file__ 的 .py 伴生），
-    直接指向 sys.executable；否则（以 python 运行脚本）写成
-    pythonw.exe + 脚本路径，保证开机启动的是这个程序而不是裸解释器。
+    指向策略：若以 PyInstaller 单文件运行（sys.frozen），直接指向 sys.executable
+    （此时 __file__ 在临时解包目录里，不能拿来当启动路径）；若以启动器 exe 拉起
+    脚本运行，优先指向同目录的「久坐休息提醒.exe」；否则写成 pythonw.exe + 脚本路径，
+    保证开机启动的是这个程序而不是裸解释器。
     """
-    script = os.path.abspath(__file__)
-    cmd = sys.executable
-    # 尽量避免写到 pip 安装目录里的脚本；优先本程序目录下同名 exe（启动器）
-    launcher = os.path.join(os.path.dirname(script), "久坐休息提醒.exe")
-    if os.path.exists(launcher):
-        cmd = '"{}"'.format(launcher)
-    elif script.lower().endswith(".py"):
-        cmd = '"{}" "{}"'.format(sys.executable, script)
+    if getattr(sys, "frozen", False):
+        # PyInstaller 单文件：开机自启直接指向本 exe
+        cmd = '"{}"'.format(os.path.abspath(sys.executable))
     else:
-        cmd = '"{}"'.format(sys.executable)
+        script = os.path.abspath(__file__)
+        cmd = sys.executable
+        # 尽量避免写到 pip 安装目录里的脚本；优先本程序目录下同名 exe（启动器）
+        launcher = os.path.join(os.path.dirname(script), "久坐休息提醒.exe")
+        if os.path.exists(launcher):
+            cmd = '"{}"'.format(launcher)
+        elif script.lower().endswith(".py"):
+            cmd = '"{}" "{}"'.format(sys.executable, script)
+        else:
+            cmd = '"{}"'.format(sys.executable)
     try:
         import winreg
         key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, STARTUP_KEY, 0,
