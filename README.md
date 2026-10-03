@@ -9,7 +9,8 @@ Windows 个人工具：设置一个工作倒计时，到点弹全屏提醒，提
 - **喝水提醒**（与休息提醒完全独立，默认开启）：**两种提醒方式可切换**（主窗口「喝水提醒设置…」）：
   ① **按饮水量推导**（默认）：按「每次饮水量 + 每日饮水量 + 工作时间段」自动推导提醒频率；
   ② **按指定间隔（分钟）**：直接设置「每隔 N 分钟提醒一次」（如每 60 分钟，范围 5–720），在设定的**工作时间段**内按间隔提醒；
-  两种方式都只在「工作时间段」内提醒（时段删空 = 不提醒）。
+  可用「**使用工作时间段**」勾选框控制（默认勾选；**取消勾选即按全天 24 小时**提醒，时段设置自动置灰但保留）；
+  勾选时两种方式都只在「工作时间段」内提醒（时段删空 = 不提醒）。
   到点在屏幕左上角弹出持久气泡（默认点击「好的，喝一口」才关闭；可在设置里勾选「喝水提示框自动消失」并设定秒数，到时自动关闭）；
   全屏休息遮罩显示时水气泡照弹并悬浮其上，同一时刻至多一个气泡（防堆积，人离开只挂一个等回来点）。
   主窗口「喝水提醒设置…」可切换提醒方式、改每次/每日饮水量、提醒间隔、时段、文案、自动消失；
@@ -83,6 +84,7 @@ python break_reminder.py
   "water_windows": [["08:30", "12:30"], ["13:30", "17:30"]],
   "water_mode": "derive",
   "water_interval": 60,
+  "water_use_windows": true,
   "water_message": "",
   "water_autoclose": false,
   "water_autoclose_seconds": 10
@@ -92,7 +94,8 @@ python break_reminder.py
 - `minutes` / `topmost` / `auto_min` / `message` / `delay_minutes` / `restart_on_done` / `autostart`：休息提醒配置。
 - `water_*`：喝水提醒配置。
   - `water_mode`：提醒方式，`"derive"`（默认，按饮水量推导）或 `"interval"`（按指定间隔）。
-  - `water_interval`：间隔方式的提醒间隔（分钟，5–720，默认 60），与工作时间段配合生效。
+  - `water_interval`：间隔方式的提醒间隔（分钟，5–720，默认 60）。
+  - `water_use_windows`：是否使用工作时间段（默认 `true`；`false` = 全天 24 小时提醒）。
   - `water_sip`（每次饮水量 ml，10–300）、`water_target`（每日饮水量 ml，500–4000）、
     `water_windows`（工作时间段，可多段）、`water_message`（提醒文案，空=默认）、
     `water_autoclose`（提示框自动消失，默认 false）、`water_autoclose_seconds`（自动消失秒数，3–120，默认 10）。
