@@ -72,11 +72,13 @@ WATER_FIRST_DELAY_MIN = 5        # 每段窗口开头首杯的延迟（分钟）
 WATER_DEFAULT_MESSAGE = "该喝水啦～啜一口，约 {sip}ml"
 WATER_DEFAULT_WINDOWS = [["08:30", "12:30"], ["13:30", "17:30"]]
 # 提醒方式（二选一，可在「喝水提醒设置…」里切换）：
-#   derive = 按「每次饮水量 + 每日饮水量 + 工作时间段」自动推导间隔（默认，原行为）
-#   time   = 按「指定时间点」直接提醒（每天循环，与工作时间段/饮水量无关）
+#   derive   = 按「每次饮水量 + 每日饮水量 + 工作时间段」自动推导间隔（默认，原行为）
+#   interval = 按「指定间隔（分钟）」提醒，仍在设定的工作时间段内生效
 WATER_MODE_DERIVE = "derive"
-WATER_MODE_TIME = "time"
-WATER_DEFAULT_TIMES = ["10:00", "15:00"]     # 按时间模式的默认提醒时刻
+WATER_MODE_INTERVAL = "interval"
+WATER_INTERVAL_DEFAULT = 60        # 指定间隔的默认值（分钟）
+WATER_INTERVAL_USER_MIN = 5        # 指定间隔可设下限（分钟）
+WATER_INTERVAL_USER_MAX = 720      # 指定间隔可设上限（分钟）
 WATER_AUTOCLOSE_DEFAULT = False   # 喝水提示框自动消失（默认不勾选）
 WATER_AUTOCLOSE_SECONDS = 10      # 勾选后默认 10 秒自动消失
 WATER_AUTOCLOSE_MIN, WATER_AUTOCLOSE_MAX = 3, 120   # 自定义消失秒数范围
@@ -806,28 +808,6 @@ def _normalize_windows(raw):
     return out
 
 
-def _normalize_times(raw):
-    """把配置里的「提醒时间点」容错解析成按时间排序的 ['HH:MM', ...]。
-
-    与 _normalize_windows 同一套容错约定：非字符串 / 无法按 %H:%M 解析的一律丢弃、
-    重复时刻合并（同一时刻只提醒一次）；空列表保留为空（= 按时间模式下不提醒，
-    用户在设置窗删空时间后恢复配置不该被默认值覆盖）；非列表坏结构回退默认。
-    """
-    if not isinstance(raw, (list, tuple)):
-        return list(WATER_DEFAULT_TIMES)
-    out = []
-    for item in raw:
-        try:
-            t = time.strptime(str(item).strip(), "%H:%M")
-            hhmm = "%02d:%02d" % (t.tm_hour, t.tm_min)
-            if hhmm not in out:
-                out.append(hhmm)
-        except Exception:
-            continue
-    out.sort(key=lambda s: (int(s[:2]), int(s[3:])))
-    return out
-
-
 def water_work_minutes(windows):
     """工作时间段总分钟数（前后段叠加计算）。"""
     total = 0
@@ -1188,8 +1168,8 @@ class BreakReminderApp:
         self.water_message = ""              # 提醒文案（空=默认）
         self.water_autoclose = WATER_AUTOCLOSE_DEFAULT  # 提示框自动消失（默认不勾选）
         self.water_autoclose_seconds = WATER_AUTOCLOSE_SECONDS  # 自动消失秒数
-        self.water_mode = WATER_MODE_DERIVE  # 提醒方式：derive 推导 / time 指定时间
-        self.water_times = list(WATER_DEFAULT_TIMES)  # 时间模式下的提醒时刻 ['HH:MM', ...]
+        self.water_mode = WATER_MODE_DERIVE  # 提醒方式：derive 推导 / interval 指定间隔
+        self.water_interval = WATER_INTERVAL_DEFAULT  # 指定间隔模式下的间隔（分钟）
         self._water_interval = None          # 推导出的间隔（分钟，实时重算）
 
         # 若 config.json 里没有该字段，则以注册表实际状态为准，避免覆盖用户系统设置
@@ -1296,13 +1276,15 @@ class BreakReminderApp:
                                       for (s, e) in WATER_DEFAULT_WINDOWS]
             # 提醒方式：缺字段走默认（旧配置自动升级），非法值回退「按推导」
             mode = str(data.get("water_mode", WATER_MODE_DERIVE) or "").strip()
-            self.water_mode = (WATER_MODE_TIME if mode == WATER_MODE_TIME
+            self.water_mode = (WATER_MODE_INTERVAL if mode == WATER_MODE_INTERVAL
                                else WATER_MODE_DERIVE)
-            if "water_times" in data:
-                # 已持久化：容错解析；为空列表保留（时间模式下删空 = 不提醒）
-                self.water_times = _normalize_times(data["water_times"])
-            else:
-                self.water_times = list(WATER_DEFAULT_TIMES)
+            # 指定间隔（分钟）：非法/越界一律钳制到可设范围
+            try:
+                iv = int(data.get("water_interval", WATER_INTERVAL_DEFAULT))
+            except Exception:
+                iv = WATER_INTERVAL_DEFAULT
+            self.water_interval = max(WATER_INTERVAL_USER_MIN,
+                                      min(WATER_INTERVAL_USER_MAX, iv))
             self.water_message = str(data.get("water_message", "") or "")
             self.water_autoclose = bool(
                 data.get("water_autoclose", WATER_AUTOCLOSE_DEFAULT))
@@ -1327,7 +1309,7 @@ class BreakReminderApp:
                 "water_sip": self.water_sip,
                 "water_windows": [list(w) for w in self.water_windows],
                 "water_mode": self.water_mode,
-                "water_times": list(self.water_times),
+                "water_interval": self.water_interval,
                 "water_message": self.water_message,
                 "water_autoclose": self.water_autoclose,
                 "water_autoclose_seconds": self.water_autoclose_seconds}
@@ -1721,10 +1703,7 @@ class BreakReminderApp:
         """计算主窗口喝水状态文本与颜色。返回 (text, color)。（两种提醒方式文案不同）"""
         if not self.water_enabled:
             return ("💧 喝水提醒已关闭", "#999999")
-        by_time = (self.water_mode == WATER_MODE_TIME)
-        if by_time and not self.water_times:
-            return ("💧 未设置提醒时间，不提醒", "#999999")
-        if not by_time and not self.water_windows:
+        if not self.water_windows:
             return ("💧 未设置工作时间段，不提醒", "#999999")
         if self._water_bubbles:
             return ("💧 该喝一口啦！", "#d93025")   # 气泡未点，保持催促
@@ -1741,9 +1720,9 @@ class BreakReminderApp:
         if mins >= 60:
             hmm = f"{mins // 60} 小时 "
             mins %= 60
-        if by_time:
-            hhmm = time.strftime("%H:%M", time.localtime(target))
-            text = f"💧 距 {hhmm} 喝水还有 {hmm}{mins:02d}:{secs:02d}"
+        if self.water_mode == WATER_MODE_INTERVAL:
+            text = (f"💧 每 {int(self.water_interval)} 分钟提醒 · "
+                    f"还剩 {hmm}{mins:02d}:{secs:02d}")
         else:
             text = f"💧 距下次喝水 {hmm}{mins:02d}:{secs:02d}"
         color = "#d93025" if remain < 60 else "#1a7a37"
@@ -2059,16 +2038,12 @@ class BreakReminderApp:
         last_sig = None             # 上次重算采用的配置签名
         while ev is not None and not ev.is_set():
             try:
-                by_time = (self.water_mode == WATER_MODE_TIME)
-                # 时间模式：只看「提醒时间点」；推导模式：看「工作时间段」
-                plan_ok = (bool(self.water_times) if by_time
-                           else bool(self.water_windows))
-                if self.water_enabled and plan_ok:
-                    # 签名含「提醒方式 / 时间点 / 饮水量 / 时段」：任一变化都会让线程
-                    # 自动重算下一次到点，切换模式无需重启程序
-                    sig = (self.water_mode, int(self.water_sip),
-                           int(self.water_target),
-                           tuple(self.water_times),
+                # 两种提醒方式都在「工作时间段」内生效（时段删空 = 不提醒）
+                if self.water_enabled and self.water_windows:
+                    # 签名含「提醒方式 / 指定间隔 / 饮水量 / 时段」：任一变化都会让线程
+                    # 自动重算下一次到点，切换方式无需重启程序
+                    sig = (self.water_mode, int(self.water_interval),
+                           int(self.water_sip), int(self.water_target),
                            tuple(tuple(w) for w in self.water_windows))
                     now = time.time()
                     if last_sig != sig or next_fire is None:
@@ -2087,7 +2062,7 @@ class BreakReminderApp:
                             next_fire = self._water_next_due(now)
                         self._water_next = next_fire
                 else:
-                    # 关闭 / 未配置提醒时间（时间模式）或未设置时段（推导模式）
+                    # 关闭 / 未设置工作时间段：清空状态
                     self._water_next = None
                     next_fire = None
                     last_sig = None
@@ -2097,47 +2072,22 @@ class BreakReminderApp:
 
     def _water_next_due(self, now):
         """按当前「提醒方式」推算下一次到点（严格 > now）。"""
-        if self.water_mode == WATER_MODE_TIME:
-            return self._water_next_by_time(now)
+        if self.water_mode == WATER_MODE_INTERVAL:
+            return self._water_next_scheduled(now, self.water_interval)
         return self._water_next_scheduled(now)
 
-    def _water_next_by_time(self, now):
-        """时间模式：返回严格 > now 的下一个「指定时刻」墙钟秒（每天循环，错过不补发）。
+    def _water_next_scheduled(self, now, interval=None):
+        """按「工作时间段 + 间隔」推算下一次喝水提醒的墙钟秒（严格 > now），跨窗口/跨天自动衔接。
 
-        与「工作时间段 / 饮水量」完全无关：到点就提醒，跨天自动滚到次日第一个时刻。
+        interval=None 时按「每次/每日饮水量」推导（derive 模式）；显式传入则用该固定
+        间隔（interval 模式）。规则（实施方案 §5）：每段窗口内首杯在段开始后约 5 分钟，
+        之后按间隔均匀铺开到段末（段太短时首杯延迟收窄为段长，保证会弹一次）；
+        下一段自然重新起算；当天全部铺完则滚到次日首段。错过不补发。
         """
-        mins = []
-        for t in self.water_times:
-            try:
-                st = time.strptime(str(t).strip(), "%H:%M")
-                mins.append(st.tm_hour * 60 + st.tm_min)
-            except Exception:
-                continue
-        if not mins:
-            return None
-        mins = sorted(set(mins))
-        tm = time.localtime(now)
-        now_min = tm.tm_hour * 60 + tm.tm_min + (now % 60) / 60.0
-        day_origin = _wall_from_minutes(0, now)     # 今日 00:00 的墙钟秒
-        for m in mins:
-            if m > now_min:
-                return day_origin + m * 60
-        # 今天全部已过 -> 次日第一个时刻（用本地墙钟构造次日，避免夏令时误差）
-        tomorrow = time.mktime(
-            (tm.tm_year, tm.tm_mon, tm.tm_mday + 1, 0, 0, 0, 0, 0, -1))
-        return tomorrow + mins[0] * 60
-
-    def _water_next_scheduled(self, now):
-        """按当前配置推算下一次喝水提醒的墙钟秒（严格 > now），跨窗口/跨天自动衔接。
-
-        规则（实施方案 §5）：每段窗口内首杯在段开始后约 5 分钟，之后按推导间隔均匀
-        铺开到段末（段太短时首杯延迟收窄为段长，保证会弹一次）；下一段自然重新起算；
-        当天全部铺完则滚到次日首段。错过不补发。
-        """
-        sip = int(self.water_sip)
-        target = int(self.water_target)
         windows = self.water_windows
-        interval = water_interval_minutes(sip, target, windows)
+        if interval is None:
+            interval = water_interval_minutes(int(self.water_sip),
+                                              int(self.water_target), windows)
         if interval is None:
             return None
         # 解析时间段为「当日分钟数」且去重排序
@@ -2305,14 +2255,6 @@ class BreakReminderApp:
         except Exception:
             return False
 
-    def _water_valid_time(self, s):
-        """校验单个 HH:MM 时刻是否合法（用于「按指定时间」模式）。"""
-        try:
-            time.strptime(str(s).strip(), "%H:%M")
-            return True
-        except Exception:
-            return False
-
     def _water_derive_preview(self, sip, target, windows):
         """设置窗实时推导信息：'预计每 N 分钟提醒一次，全天约 M 次 ≈ X L'。"""
         if not windows:
@@ -2332,6 +2274,20 @@ class BreakReminderApp:
         return (f"预计每 {iv} 分钟提醒一次，全天约 {cups} 次 "
                 f"≈ {target / 1000:g}L{note}")
 
+    def _water_interval_preview(self, interval, windows):
+        """「按指定间隔」方式的实时预览：每隔 N 分钟提醒一次、全天约多少次。"""
+        if not windows:
+            return "未设置工作时间段，喝水提醒暂不生效（时段删空）"
+        try:
+            iv = max(WATER_INTERVAL_USER_MIN,
+                     min(WATER_INTERVAL_USER_MAX, int(interval)))
+        except Exception:
+            iv = self.water_interval
+        total = water_work_minutes(windows)
+        cups = int(total // iv) + (1 if total % iv else 0)
+        return (f"每隔 {iv} 分钟提醒一次（工作时间段内每天约 {max(1, cups)} 次；"
+                f"每段时段开始约 {WATER_FIRST_DELAY_MIN} 分钟后首杯）")
+
     def _show_water_settings(self):
         """独立 Toplevel 设置窗（主窗口不再加行）。关闭 = 保存。"""
         dlg = tk.Toplevel(self.root)
@@ -2347,29 +2303,27 @@ class BreakReminderApp:
                         ).grid(row=0, column=0, columnspan=4, sticky="w",
                                pady=(0, 10))
 
-        # 提醒方式：二选一（推导间隔 / 直接指定时间）
+        # 提醒方式：二选一（按饮水量推导间隔 / 直接指定间隔）
         mode_var = tk.StringVar(value=self.water_mode)
-        derive_only = []        # 仅「按饮水量推导」模式显示的控件
-        time_only = []          # 仅「按指定时间」模式显示的控件
+        derive_only = []        # 仅「按饮水量推导」方式显示的控件
+        interval_only = []      # 仅「按指定间隔」方式显示的控件
 
         def on_mode_change():
-            """切换提醒方式：推导模式显示饮水量+工作时间段，时间模式显示提醒时间点。"""
-            is_time = mode_var.get() == WATER_MODE_TIME
+            """切换提醒方式：推导方式显示饮水量，间隔方式显示「每隔 N 分钟」；
+            工作时间段两种方式都生效，始终可见。"""
+            is_interval = mode_var.get() == WATER_MODE_INTERVAL
             for w in derive_only:
-                if is_time:
-                    w.grid_remove()          # 收起该行（行高归零，下方内容自动上移）
-                else:
-                    w.grid()
-            for w in time_only:
-                w.grid() if is_time else w.grid_remove()
+                w.grid_remove() if is_interval else w.grid()
+            for w in interval_only:
+                w.grid() if is_interval else w.grid_remove()
             refresh_preview()
 
         ttk.Radiobutton(frm, text="按饮水量推导", variable=mode_var,
                         value=WATER_MODE_DERIVE,
                         command=on_mode_change).grid(
             row=1, column=0, columnspan=2, sticky="w", pady=(0, 6))
-        ttk.Radiobutton(frm, text="按指定时间", variable=mode_var,
-                        value=WATER_MODE_TIME,
+        ttk.Radiobutton(frm, text="按指定间隔（分钟）", variable=mode_var,
+                        value=WATER_MODE_INTERVAL,
                         command=on_mode_change).grid(
             row=1, column=2, columnspan=2, sticky="w", pady=(0, 6))
 
@@ -2390,12 +2344,26 @@ class BreakReminderApp:
                                font=("Microsoft YaHei UI", 10))
         spin_tgt.grid(row=2, column=3, sticky="w")
 
-        # 工作时间段（多行编辑，可增删行）—— 仅「按饮水量推导」模式使用
+        # 提醒间隔（分钟）—— 仅「按指定间隔」方式使用
+        interval_var = tk.IntVar(value=self.water_interval)
+        iv_lbl = ttk.Label(frm, text="每隔（分钟）提醒一次：")
+        iv_lbl.grid(row=3, column=0, sticky="e", padx=(0, 6))
+        spin_iv = ttk.Spinbox(frm, from_=WATER_INTERVAL_USER_MIN,
+                              to=WATER_INTERVAL_USER_MAX,
+                              textvariable=interval_var, width=7,
+                              font=("Microsoft YaHei UI", 10))
+        spin_iv.grid(row=3, column=1, sticky="w", padx=(0, 16))
+        iv_hint = ttk.Label(frm, text="（在下方工作时间段内生效）",
+                            foreground="#666666")
+        iv_hint.grid(row=3, column=2, columnspan=2, sticky="w")
+        interval_var.trace_add("write", lambda *a: refresh_preview())
+
+        # 工作时间段（多行编辑，可增删行）—— 两种提醒方式都只在该时间段内提醒
         win_title = ttk.Label(frm, text="工作时间段（开始 结束，HH:MM）：",
                               font=("Microsoft YaHei UI", 10))
-        win_title.grid(row=3, column=0, columnspan=4, sticky="w", pady=(14, 4))
+        win_title.grid(row=4, column=0, columnspan=4, sticky="w", pady=(14, 4))
         rows_box = ttk.Frame(frm)
-        rows_box.grid(row=4, column=0, columnspan=4, sticky="w")
+        rows_box.grid(row=5, column=0, columnspan=4, sticky="w")
         row_entries = []          # [(start_entry, end_entry), ...]
 
         def collect_rows():
@@ -2410,41 +2378,27 @@ class BreakReminderApp:
                     wins.append([s, e])
             return wins
 
-        def collect_times():
-            """读取时间模式各行，返回合法 ['HH:MM', ...]（去重 + 按时刻排序）。"""
-            out = []
-            for te in time_entries:
-                try:
-                    t = (te.get() or "").strip()
-                except Exception:
-                    continue
-                if not t or not self._water_valid_time(t):
-                    continue                    # 空行 / 非法时间忽略
-                if t not in out:
-                    out.append(t)
-            out.sort(key=lambda s: (int(s[:2]), int(s[3:])))
-            return out
-
         def refresh_preview():
-            """底部只读信息：推导模式显示推导结果，时间模式显示当天提醒时刻。"""
-            if mode_var.get() == WATER_MODE_TIME:
-                times = collect_times()
-                if not times:
-                    deriv_label.config(
-                        text="未设置提醒时间，喝水提醒暂不生效（时间删空）")
-                else:
-                    deriv_label.config(
-                        text="每天在 {} 提醒（共 {} 次，每天循环）".format(
-                            "、".join(times), len(times)))
-                return
+            """底部只读信息：推导方式显示推导结果，间隔方式显示设定间隔与全天次数。"""
             try:
                 sip_v = int(sip_var.get())
+            except Exception:
+                sip_v = self.water_sip
+            try:
                 tgt_v = int(target_var.get())
             except Exception:
-                sip_v, tgt_v = self.water_sip, self.water_target
+                tgt_v = self.water_target
+            try:
+                iv_v = int(interval_var.get())
+            except Exception:
+                iv_v = self.water_interval
             wins = collect_rows()
-            deriv_label.config(text=self._water_derive_preview(
-                sip_v, tgt_v, wins))
+            if mode_var.get() == WATER_MODE_INTERVAL:
+                deriv_label.config(
+                    text=self._water_interval_preview(iv_v, wins))
+            else:
+                deriv_label.config(text=self._water_derive_preview(
+                    sip_v, tgt_v, wins))
 
         # 饮水量变化也实时刷新推导信息
         sip_var.trace_add("write", lambda *a: refresh_preview())
@@ -2477,68 +2431,34 @@ class BreakReminderApp:
 
         btn_add = ttk.Button(frm, text="＋添加上班时间段",
                              command=lambda: (add_row(), refresh_preview()))
-        btn_add.grid(row=5, column=0, columnspan=4, sticky="w", pady=(6, 0))
+        btn_add.grid(row=6, column=0, columnspan=4, sticky="w", pady=(6, 0))
 
-        # ---- 「按指定时间」模式：直接设置每天的提醒时刻（HH:MM，可多行增删）----
-        time_title = ttk.Label(frm, text="提醒时间（HH:MM，可多行）：",
-                               font=("Microsoft YaHei UI", 10))
-        time_title.grid(row=6, column=0, columnspan=4, sticky="w",
-                        pady=(14, 4))
-        time_rows_box = ttk.Frame(frm)
-        time_rows_box.grid(row=7, column=0, columnspan=4, sticky="w")
-        time_entries = []         # [Entry, ...]（每行一个提醒时刻）
-
-        def add_time_row(t="10:00"):
-            row = ttk.Frame(time_rows_box)
-            row.pack(fill="x", pady=2)
-            te = ttk.Entry(row, width=8, font=("Microsoft YaHei UI", 10))
-            te.insert(0, t)
-            te.pack(side="left", padx=(0, 6))
-            ttk.Button(row, text="删", width=4,
-                       command=lambda: (row.destroy(),
-                                        time_entries.remove(te),
-                                        refresh_preview())).pack(side="left")
-            te.bind("<KeyRelease>", lambda ev: refresh_preview())
-            time_entries.append(te)
-
-        for t in self.water_times:
-            add_time_row(t)
-        if not time_entries:
-            add_time_row()
-
-        btn_add_time = ttk.Button(frm, text="＋添加提醒时间",
-                                  command=lambda: (add_time_row(),
-                                                   refresh_preview()))
-        btn_add_time.grid(row=8, column=0, columnspan=4, sticky="w",
-                          pady=(6, 0))
-
-        # 两种模式各自可见的控件（切换时整体收起/展开）
-        derive_only.extend([sip_lbl, spin_sip, tgt_lbl, spin_tgt,
-                            win_title, rows_box, btn_add])
-        time_only.extend([time_title, time_rows_box, btn_add_time])
+        # 两种方式各自可见的控件（切换时整体收起/展开；工作时间段两种方式都可见）
+        derive_only.extend([sip_lbl, spin_sip, tgt_lbl, spin_tgt])
+        interval_only.extend([iv_lbl, spin_iv, iv_hint])
 
         # 提醒文案（空 = 默认）
         ttk.Label(frm, text="提醒文案（空=默认）：").grid(
-            row=9, column=0, sticky="e", pady=(14, 4), padx=(0, 6))
+            row=10, column=0, sticky="e", pady=(14, 4), padx=(0, 6))
         msg_var = tk.StringVar(value=self.water_message)
         msg_entry = ttk.Entry(frm, textvariable=msg_var, width=30,
                               font=("Microsoft YaHei UI", 10))
-        msg_entry.grid(row=9, column=1, columnspan=3, sticky="w", pady=(14, 4))
+        msg_entry.grid(row=10, column=1, columnspan=3, sticky="w", pady=(14, 4))
 
         # 自动消失：勾选后气泡在设定秒数后自动关闭（默认不勾选）
         autoclose_var = tk.BooleanVar(value=self.water_autoclose)
         ttk.Checkbutton(frm, text="喝水提示框自动消失", variable=autoclose_var,
                         command=lambda: autoc_close_toggle()
-                        ).grid(row=10, column=0, columnspan=2, sticky="w",
+                        ).grid(row=11, column=0, columnspan=2, sticky="w",
                                pady=(4, 0))
         ttk.Label(frm, text="消失秒数：").grid(
-            row=10, column=2, sticky="e", padx=(0, 4))
+            row=11, column=2, sticky="e", padx=(0, 4))
         acsec_var = tk.IntVar(value=self.water_autoclose_seconds)
         acsec_spin = ttk.Spinbox(frm, from_=WATER_AUTOCLOSE_MIN,
                                  to=WATER_AUTOCLOSE_MAX,
                                  textvariable=acsec_var, width=6,
                                  font=("Microsoft YaHei UI", 10))
-        acsec_spin.grid(row=10, column=3, sticky="w")
+        acsec_spin.grid(row=11, column=3, sticky="w")
 
         def autoc_close_toggle():
             # 勾选自动消失时启用秒数输入，否则置灰
@@ -2550,10 +2470,10 @@ class BreakReminderApp:
 
         autoc_close_toggle()   # 初始状态
 
-        # 只读信息（实时刷新）：推导模式 = 预计间隔；时间模式 = 当天提醒时刻
+        # 只读信息（实时刷新）：推导方式 = 预计间隔；间隔方式 = 设定间隔与全天次数
         deriv_label = ttk.Label(frm, text="", foreground="#1a73e8",
                                 wraplength=dpi_px(dlg, 420), justify="left")
-        deriv_label.grid(row=11, column=0, columnspan=4, sticky="w", pady=(10, 6))
+        deriv_label.grid(row=12, column=0, columnspan=4, sticky="w", pady=(10, 6))
         on_mode_change()   # 按当前提醒方式显示对应区域，并刷新只读信息
 
         btn_save = ttk.Button(frm, text="完成（保存并关闭）",
@@ -2561,12 +2481,12 @@ class BreakReminderApp:
                                   dlg, enabled_var, sip_var, target_var,
                                   msg_var, row_entries,
                                   autoclose_var, acsec_var,
-                                  mode_var, time_entries))
-        btn_save.grid(row=12, column=0, columnspan=4, pady=(12, 0))
+                                  mode_var, interval_var))
+        btn_save.grid(row=13, column=0, columnspan=4, pady=(12, 0))
 
         dlg.protocol("WM_DELETE_WINDOW", lambda: self._water_save_settings(
             dlg, enabled_var, sip_var, target_var, msg_var, row_entries,
-            autoclose_var, acsec_var, mode_var, time_entries))
+            autoclose_var, acsec_var, mode_var, interval_var))
 
         # 自适应尺寸：按内容自然尺寸贴合并夹紧到主屏工作区（不再写死 / 越屏）
         box.bind_wheel()
@@ -2576,7 +2496,7 @@ class BreakReminderApp:
     def _water_save_settings(self, dlg, enabled_var, sip_var, target_var,
                              msg_var, row_entries,
                              autoclose_var=None, acsec_var=None,
-                             mode_var=None, time_entries=None):
+                             mode_var=None, interval_var=None):
         try:
             sip = int(sip_var.get())
         except Exception:
@@ -2597,34 +2517,30 @@ class BreakReminderApp:
             if self._water_valid_pair(s, e):     # 非法时间直接忽略不写
                 wins.append([s, e])
 
-        # 提醒方式 + 指定时间点（时间行在两种模式下都收集，来回切换不丢已填内容）
+        # 提醒方式 + 指定间隔（分钟）
         mode = WATER_MODE_DERIVE
         if mode_var is not None:
             try:
                 mode = str(mode_var.get() or "")
             except Exception:
                 mode = WATER_MODE_DERIVE
-        if mode not in (WATER_MODE_DERIVE, WATER_MODE_TIME):
+        if mode not in (WATER_MODE_DERIVE, WATER_MODE_INTERVAL):
             mode = WATER_MODE_DERIVE
-        times = []
-        if time_entries is not None:
-            for te in time_entries:
-                try:
-                    t = (te.get() or "").strip()
-                except Exception:
-                    continue
-                if not t or not self._water_valid_time(t):
-                    continue                     # 空行 / 非法时刻直接忽略不写
-                if t not in times:
-                    times.append(t)
-            times.sort(key=lambda s: (int(s[:2]), int(s[3:])))
+        interval = self.water_interval
+        if interval_var is not None:
+            try:
+                interval = int(interval_var.get())
+            except Exception:
+                interval = self.water_interval
+        interval = max(WATER_INTERVAL_USER_MIN,
+                       min(WATER_INTERVAL_USER_MAX, interval))
 
         self.water_enabled = bool(enabled_var.get())
         self.water_sip = sip
         self.water_target = target
         self.water_windows = wins                # 删空 => 提醒失效（设置窗已有提示）
-        self.water_mode = mode                   # derive / time
-        self.water_times = times                 # 时间模式下删空 => 不提醒
+        self.water_mode = mode                   # derive / interval
+        self.water_interval = interval           # 指定间隔（分钟）
         self.water_message = (msg_var.get() or "")
         # 自动消失：勾选状态 + 秒数（未勾选时沿用原值即可；勾选时读取秒数并钳制）
         if autoclose_var is not None:
